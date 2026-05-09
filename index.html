@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Movie Recommendation System</title>
+  <link rel="stylesheet" href="./css/style.css" />
+  <script type="module" src="./js/main.js"></script>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>Movie Recommendation System Simulator</h1>
+      <p>Find a user to explore their statistics and simulate movie recommendations</p>
+    </header>
+
+    <form id="registrationForm" novalidate>
+
+      <!-- Step 1: email -->
+      <div id="stepEmail">
+        <label class="field-label" for="email">Search User by User ID or Email</label>
+        <div class="email-row">
+          <input type="text" id="email" name="email" placeholder="user_id or user@email.com" required />
+          <button type="button" id="btnSearch" class="btn">Search</button>
+          <button type="button" id="btnNewUser" class="btn">New User</button>
+        </div>
+      </div>
+
+      <!-- Step 2a: plain-text view of found user -->
+      <div id="stepDisplay" hidden>
+        <div class="email-confirmed">
+          <span id="emailConfirmed"></span>
+          <button type="button" id="btnChangeEmail" class="btn-ghost">Change</button>
+        </div>
+        <div class="user-view">
+          <div class="meta-item"><span class="meta-label">UserID (Name)</span><span id="viewName"></span></div>
+          <div class="meta-item"><span class="meta-label">Date of Birth</span><span id="viewDob"></span></div>
+          <div class="meta-item"><span class="meta-label">Gender</span><span id="viewGender"></span></div>
+          <div class="meta-item"><span class="meta-label">Race</span><span id="viewRace"></span></div>
+          <div class="meta-item"><span class="meta-label">Country</span><span id="viewCountry"></span></div>
+          <button type="button" id="btnEditUser" class="btn">&#9998; Edit</button>
+        </div>
+      </div>
+
+      <!-- Step 2b: editable fields (new user or edit mode) -->
+      <div id="stepFields" hidden>
+
+        <div class="field">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" placeholder="Full name" required />
+        </div>
+
+        <div class="field">
+          <label>Gender</label>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="gender" value="male" /> Male
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="gender" value="female" /> Female
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="gender" value="not_informed" checked /> Not Informed
+            </label>
+          </div>
+        </div>
+
+        <div class="field-group">
+            <div class="field">
+              <label for="dob">Date of Birth</label>
+              <input type="date" id="dob" name="dob" required />
+            </div>
+
+            <div class="field">
+              <label for="race">Race</label>
+              <select id="race" name="race" required>
+                <option value="" disabled selected>Select an option</option>
+                <option value="asian">Asian</option>
+                <option value="white">White</option>
+                <option value="black">Black</option>
+                <option value="indigenous">Indigenous</option>
+                <option value="mixed_race">Mixed-race</option>
+                <option value="not_informed">Not Informed</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="country">Country</label>
+              <select id="country" name="country" required>
+                <option value="" disabled selected>Select your country</option>
+              </select>
+            </div>
+        </div>
+        <button type="button" id="btnSaveUser" class="btn">Save</button>
+
+      </div>
+
+    </form>
+
+    <div id="successMsg" class="success-msg" hidden></div>
+  </div>
+
+  <div id="loadingOverlay" hidden>
+    <div class="loading-spinner"></div>
+    <p class="loading-text">Loading user data…</p>
+  </div>
+
+  <!-- ── Main tab container ──────────────────────────────────── -->
+  <div class="main-tabs" id="mainTabs" style="display:none">
+
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="tabPrevious">Previous Ratings</button>
+      <button class="tab-btn" data-tab="tabNew">New Ratings</button>
+      <button class="tab-btn" data-tab="tabPrevRec">Previous Recommendation</button>
+      <button class="tab-btn" data-tab="tabRecommender">New Recommendation</button>
+    </div>
+
+    <!-- Tab 1: Previous Ratings -->
+    <div class="tab-panel" id="tabPrevious">
+
+      <section class="tab-section user-stats-section" id="userStatsSection" hidden style="display:none">
+        <h2 class="movies-heading">User Rating Statistics <button class="section-toggle" data-target="statsBody">−</button></h2>
+        <div class="stats-body" id="statsBody">
+          <div class="stats-col-left">
+            <div class="stats-summary" id="statsSummary"></div>
+            <div class="stats-histogram" id="statsHistogram"></div>
+          </div>
+          <div class="stats-col-right">
+            <div class="stats-genres" id="statsGenres"></div>
+            <div class="stats-genres" id="statsContinent"></div>
+            <div class="stats-genres" id="statsLanguages"></div>
+            <div class="stats-genres" id="statsSpWins"></div>
+            <div class="stats-genres" id="statsSpNoms"></div>
+            <div class="stats-genres" id="statsWins"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-section user-ratings-section" id="userRatingsSection" hidden style="display:none">
+        <h2 class="movies-heading">User Rated Movies List <button class="section-toggle" data-target="ratingsContent">−</button></h2>
+        <div id="ratingsContent">
+          <table class="ratings-table" id="ratingsTable">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Genres</th>
+                <th>Tags</th>
+                <th>Rating</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody id="ratingsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="movie-detail" id="movieDetail" hidden style="display:none">
+        <div class="movie-detail-header">
+          <span class="movies-heading" style="margin:0">Movie Detail</span>
+          <button class="section-toggle" data-target="movieDetailContent">−</button>
+        </div>
+        <div id="movieDetailContent" class="movie-detail-content">
+          <div class="detail-sidebar">
+            <img class="detail-poster" id="detailPoster" src="" alt="" />
+            <div class="detail-ratings" id="detailRatings"></div>
+          </div>
+          <div class="detail-body">
+            <h2 class="detail-title" id="detailTitle"></h2>
+            <div class="detail-meta">
+              <div class="detail-col">
+                <div class="meta-item"><span class="meta-label">Year</span><span id="detailYear"></span></div>
+                <div class="meta-item"><span class="meta-label">Released</span><span id="detailReleased"></span></div>
+                <div class="meta-item"><span class="meta-label">Runtime</span><span id="detailRuntime"></span></div>
+                <div class="meta-item"><span class="meta-label">Country</span><span id="detailCountry"></span></div>
+                <div class="meta-item"><span class="meta-label">Language</span><span id="detailLanguage"></span></div>
+              </div>
+              <div class="detail-col">
+                <div class="meta-item"><span class="meta-label">Genre</span><span id="detailGenre"></span></div>
+                <div class="meta-item"><span class="meta-label">Director</span><span id="detailDirector"></span></div>
+                <div class="meta-item"><span class="meta-label">Writer</span><span id="detailWriter"></span></div>
+                <div class="meta-item"><span class="meta-label">Cast</span><span id="detailCast"></span></div>
+                <div class="meta-item"><span class="meta-label">Awards</span><span id="detailAwards"></span></div>
+              </div>
+            </div>
+            <div id="detailPeople" class="detail-people"></div>
+            <div id="detailGenresTags" class="detail-genres-tags"></div>
+            <div class="detail-plot">
+              <span class="meta-label">Sinopse</span>
+              <p id="detailPlot"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Tab 2: New Ratings -->
+    <div class="tab-panel" id="tabNew" style="display:none">
+      <div class="tab-section" id="moviesSection">
+        <h2 class="movies-heading">Rate Movies</h2>
+        <div class="movies-grid" id="moviesGrid"></div>
+      </div>
+      <div class="save-ratings-bar">
+        <div id="saveRatingsMsg" class="save-ratings-msg" style="display:none"></div>
+        <button type="button" id="btnSaveRatings" class="btn btn--accent">Save New Ratings</button>
+      </div>
+
+      <section class="movie-detail" id="movieDetailNew" hidden style="display:none">
+        <div class="movie-detail-header">
+          <span class="movies-heading" style="margin:0">Movie Detail</span>
+          <button class="section-toggle" data-target="movieDetailContentNew">−</button>
+        </div>
+        <div id="movieDetailContentNew" class="movie-detail-content">
+          <div class="detail-sidebar">
+            <img class="detail-poster" id="detailPosterNew" src="" alt="" />
+            <div class="detail-ratings" id="detailRatingsNew"></div>
+          </div>
+          <div class="detail-body">
+            <h2 class="detail-title" id="detailTitleNew"></h2>
+            <div class="detail-meta">
+              <div class="detail-col">
+                <div class="meta-item"><span class="meta-label">Year</span><span id="detailYearNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Released</span><span id="detailReleasedNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Runtime</span><span id="detailRuntimeNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Country</span><span id="detailCountryNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Language</span><span id="detailLanguageNew"></span></div>
+              </div>
+              <div class="detail-col">
+                <div class="meta-item"><span class="meta-label">Genre</span><span id="detailGenreNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Director</span><span id="detailDirectorNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Writer</span><span id="detailWriterNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Cast</span><span id="detailCastNew"></span></div>
+                <div class="meta-item"><span class="meta-label">Awards</span><span id="detailAwardsNew"></span></div>
+              </div>
+            </div>
+            <div id="detailPeopleNew" class="detail-people"></div>
+            <div id="detailGenresTagsNew" class="detail-genres-tags"></div>
+            <div class="detail-plot">
+              <span class="meta-label">Sinopse</span>
+              <p id="detailPlotNew"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Tab 3: Previous Recommendation -->
+    <div class="tab-panel" id="tabPrevRec" style="display:none">
+
+      <div id="prevRecPagination" class="ratings-pagination" style="margin:1rem 0"></div>
+
+      <section class="movie-detail" id="movieDetailPrevRec" hidden style="display:none">
+        <div class="movie-detail-header">
+          <span class="movies-heading" style="margin:0">Movie Detail</span>
+          <button class="section-toggle" data-target="movieDetailContentPrevRec">−</button>
+        </div>
+        <div id="movieDetailContentPrevRec" class="movie-detail-content">
+          <div class="detail-sidebar">
+            <img class="detail-poster" id="detailPosterPrevRec" src="" alt="" />
+            <div class="detail-ratings" id="detailRatingsPrevRec"></div>
+          </div>
+          <div class="detail-body">
+            <h2 class="detail-title" id="detailTitlePrevRec"></h2>
+            <div class="detail-meta">
+              <div class="detail-col">
+                <div class="meta-item"><span class="meta-label">Year</span><span id="detailYearPrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Released</span><span id="detailReleasedPrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Runtime</span><span id="detailRuntimePrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Country</span><span id="detailCountryPrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Language</span><span id="detailLanguagePrevRec"></span></div>
+              </div>
+              <div class="detail-col">
+                <div class="meta-item"><span class="meta-label">Genre</span><span id="detailGenrePrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Director</span><span id="detailDirectorPrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Writer</span><span id="detailWriterPrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Cast</span><span id="detailCastPrevRec"></span></div>
+                <div class="meta-item"><span class="meta-label">Awards</span><span id="detailAwardsPrevRec"></span></div>
+              </div>
+            </div>
+            <div id="detailPeoplePrevRec" class="detail-people"></div>
+            <div id="detailGenresTagsPrevRec" class="detail-genres-tags"></div>
+            <div class="detail-plot">
+              <span class="meta-label">Sinopse</span>
+              <p id="detailPlotPrevRec"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bias -->
+      <section class="tab-section user-ratings-section">
+        <h2 class="movies-heading">Bias <span id="prevRecDate_bias" class="meta-label" style="font-weight:normal;font-size:.85rem"></span></h2>
+        <table class="ratings-table">
+          <thead><tr><th>Title</th><th>Genres</th><th>Score</th><th>Rank</th><th>Rating</th></tr></thead>
+          <tbody id="prevRecBody_bias"></tbody>
+        </table>
+        <div class="stats-summary" id="prevRecMetrics_bias" style="margin-top:0.8rem"></div>
+      </section>
+
+      <!-- User KNN -->
+      <section class="tab-section user-ratings-section">
+        <h2 class="movies-heading">User KNN <span id="prevRecDate_user_knn" class="meta-label" style="font-weight:normal;font-size:.85rem"></span></h2>
+        <table class="ratings-table">
+          <thead><tr><th>Title</th><th>Genres</th><th>Score</th><th>Rank</th><th>Rating</th></tr></thead>
+          <tbody id="prevRecBody_user_knn"></tbody>
+        </table>
+        <div class="stats-summary" id="prevRecMetrics_user_knn" style="margin-top:0.8rem"></div>
+      </section>
+
+      <!-- Biased MF -->
+      <section class="tab-section user-ratings-section">
+        <h2 class="movies-heading">Biased MF <span id="prevRecDate_biased_mf" class="meta-label" style="font-weight:normal;font-size:.85rem"></span></h2>
+        <table class="ratings-table">
+          <thead><tr><th>Title</th><th>Genres</th><th>Score</th><th>Rank</th><th>Rating</th></tr></thead>
+          <tbody id="prevRecBody_biased_mf"></tbody>
+        </table>
+        <div class="stats-summary" id="prevRecMetrics_biased_mf" style="margin-top:0.8rem"></div>
+      </section>
+
+    </div>
+
+    <!-- Tab 4: Recommender -->
+    <div class="tab-panel" id="tabRecommender" style="display:none">
+      <div class="tab-section recommender-panel">
+        <div class="recommender-controls">
+          <div class="field recommender-field">
+            <label class="field-label" for="modelSelect">Recommendation Model</label>
+            <select id="modelSelect" name="modelSelect">
+              <option value="popular">Popular</option>
+              <option value="random">Random</option>
+              <option value="bias">Bias</option>
+              <option value="item_knn">Item KNN</option>
+              <option value="user_knn">User KNN</option>
+              <option value="biased_mf">Biased MF</option>
+            </select>
+          </div>
+          <div class="field recommender-field">
+            <label class="field-label" for="recN">Number of Recommended Movies (5–50)</label>
+            <input type="number" id="recN" name="recN" min="5" max="50" value="10" />
+          </div>
+<button type="button" id="btnSimulateRec" class="btn">Simulate Recommendations</button>
+        </div>
+        <div id="recResults" class="rec-results"></div>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>
