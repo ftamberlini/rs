@@ -1010,6 +1010,19 @@ button[type="submit"].btn,
   border-bottom: 2px solid var(--c-dark);
 }
 
+.sim-col .stats-body {
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.sim-col .stats-col-left {
+  width: 100%;
+}
+
+.sim-col .stats-summary {
+  flex-wrap: wrap;
+}
+
 /* Sinopse */
 .detail-plot {
   display: flex;
