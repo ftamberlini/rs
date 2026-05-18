@@ -119,6 +119,7 @@ _movie_imdb_awards: dict[str, dict]     = {}
 _movie_languages: dict[str, list[str]]  = {}
 _movie_continents: dict[str, list[str]] = {}
 _iso_continent:   dict[str, str]        = {}
+_user_similarity: dict[str, list[dict]] = {}
 
 _global_n_users    = 0
 _global_avg_movies = 0.0
@@ -190,6 +191,16 @@ def _load_static_data():
     _global_avg_movies = round(float(_global_stats["AVG_MOVIES"]  or 0), 1)
     _global_avg_rating = round(float(_global_stats["AVG_RATING"]  or 0), 2)
     _global_std        = round(float(_global_stats["STD_RATING"]  or 0), 2)
+
+    sim_path = Path("data/user_similarity.csv")
+    if sim_path.exists():
+        with open(sim_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                uid = str(row["user_id"]).strip()
+                _user_similarity.setdefault(uid, []).append({
+                    "user_id":    str(row["similar_user_id"]).strip(),
+                    "similarity": round(float(row["cosine_similarity"]), 4),
+                })
 
 
 # ---------------------------------------------------------------------------
@@ -670,3 +681,8 @@ async def recommend_endpoint(userid: str, model: str = "popular", n: int = 10):
                 "plot":    r.get("PLOT", ""),
             })
     return JSONResponse(results)
+
+
+@app.get("/user_similarity/{userid}")
+async def user_similarity_endpoint(userid: str):
+    return JSONResponse(_user_similarity.get(str(userid), []))

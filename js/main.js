@@ -1,6 +1,7 @@
-import { loadUserStats, loadUserRatings, _ratingsData } from './previous_rating.js';
+import { loadUserStats, loadUserRatings, getRatingsData } from './previous_rating.js';
 import { loadMovies } from './new_ratings.js';
 import { loadPrevRecommendations } from './prev_recommendations.js';
+import { loadUserSimilarity, clearUserSimilarity } from './user_similarity.js';
 import './recommender.js';
 
 // ── Global state (shared across all tab files) ────────────────────────────────
@@ -125,6 +126,7 @@ function showStep1() {
   document.getElementById('recResults').innerHTML = '';
   const srm = document.getElementById('saveRatingsMsg');
   srm.style.display = 'none'; srm.textContent = '';
+  clearUserSimilarity();
   _moviesLoaded  = false;
   _currentUserId = null;
 }
@@ -343,8 +345,9 @@ btnContinue.addEventListener('click', async () => {
     showMovieSections();
     showLoader();
     try {
-      await Promise.all([loadUserStats(user.userid), loadUserRatings(user.userid), loadPrevRecommendations(user.userid)]);
-      if (_ratingsData.length > 0) await showMovieFromId(_ratingsData[0].movieid);
+      await Promise.all([loadUserStats(user.userid), loadUserRatings(user.userid), loadPrevRecommendations(user.userid), loadUserSimilarity(user.userid)]);
+      const _rd = getRatingsData();
+      if (_rd.length > 0) await showMovieFromId(_rd[0].movieid);
     } finally {
       hideLoader();
     }

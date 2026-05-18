@@ -111,6 +111,7 @@
 
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="tabPrevious">Previous Ratings</button>
+      <button class="tab-btn" data-tab="tabSimilarity">User Similarity</button>
       <button class="tab-btn" data-tab="tabNew">New Ratings</button>
       <button class="tab-btn" data-tab="tabPrevRec">Previous Recommendation</button>
       <button class="tab-btn" data-tab="tabRecommender">New Recommendation</button>
@@ -193,6 +194,162 @@
         </div>
       </section>
 
+    </div>
+
+    <!-- Tab: User Similarity -->
+    <div class="tab-panel" id="tabSimilarity" style="display:none">
+
+      <div class="sim-selector-bar">
+        <label class="field-label" for="simUserSelect">Compare with similar user</label>
+        <select id="simUserSelect" style="width:auto;min-width:280px"></select>
+        <span id="simScoreBadge" class="sim-badge"></span>
+      </div>
+
+      <div class="sim-columns">
+
+        <!-- Left column: Current User -->
+        <div class="sim-col">
+          <div class="sim-col-heading">Current User</div>
+
+          <section class="tab-section user-stats-section" id="userStatsSectionSim" hidden style="display:none">
+            <h2 class="movies-heading">User Rating Statistics <button class="section-toggle" data-target="statsBodySim">−</button></h2>
+            <div class="stats-body" id="statsBodySim">
+              <div class="stats-col-left">
+                <div class="stats-summary" id="statsSummarySim"></div>
+                <div class="stats-histogram" id="statsHistogramSim"></div>
+              </div>
+              <div class="stats-col-right">
+                <div class="stats-genres" id="statsGenresSim"></div>
+                <div class="stats-genres" id="statsContinentSim"></div>
+                <div class="stats-genres" id="statsLanguagesSim"></div>
+                <div class="stats-genres" id="statsSpWinsSim"></div>
+                <div class="stats-genres" id="statsSpNomsSim"></div>
+                <div class="stats-genres" id="statsWinsSim"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="tab-section user-ratings-section" id="userRatingsSectionSim" hidden style="display:none">
+            <h2 class="movies-heading">Rated Movies <button class="section-toggle" data-target="ratingsContentSim">−</button></h2>
+            <div id="ratingsContentSim">
+              <table class="ratings-table">
+                <thead><tr><th>Title</th><th>Genres</th><th>Tags</th><th>Rating</th><th>Date</th></tr></thead>
+                <tbody id="ratingsBodySim"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="movie-detail" id="movieDetailSim" hidden style="display:none">
+            <div class="movie-detail-header">
+              <span class="movies-heading" style="margin:0">Movie Detail</span>
+              <button class="section-toggle" data-target="movieDetailContentSim">−</button>
+            </div>
+            <div id="movieDetailContentSim" class="movie-detail-content">
+              <div class="detail-sidebar">
+                <img class="detail-poster" id="detailPosterSim" src="" alt="" />
+                <div class="detail-ratings" id="detailRatingsSim"></div>
+              </div>
+              <div class="detail-body">
+                <h2 class="detail-title" id="detailTitleSim"></h2>
+                <div class="detail-meta">
+                  <div class="detail-col">
+                    <div class="meta-item"><span class="meta-label">Year</span><span id="detailYearSim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Released</span><span id="detailReleasedSim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Runtime</span><span id="detailRuntimeSim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Country</span><span id="detailCountrySim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Language</span><span id="detailLanguageSim"></span></div>
+                  </div>
+                  <div class="detail-col">
+                    <div class="meta-item"><span class="meta-label">Genre</span><span id="detailGenreSim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Director</span><span id="detailDirectorSim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Writer</span><span id="detailWriterSim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Cast</span><span id="detailCastSim"></span></div>
+                    <div class="meta-item"><span class="meta-label">Awards</span><span id="detailAwardsSim"></span></div>
+                  </div>
+                </div>
+                <div id="detailPeopleSim" class="detail-people"></div>
+                <div id="detailGenresTagsSim" class="detail-genres-tags"></div>
+                <div class="detail-plot">
+                  <span class="meta-label">Sinopse</span>
+                  <p id="detailPlotSim"></p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Right column: Similar User -->
+        <div class="sim-col">
+          <div class="sim-col-heading">User <span id="simOtherHeading">—</span></div>
+
+          <section class="tab-section user-stats-section" id="userStatsSectionSimOther" hidden style="display:none">
+            <h2 class="movies-heading">User Rating Statistics <button class="section-toggle" data-target="statsBodySimOther">−</button></h2>
+            <div class="stats-body" id="statsBodySimOther">
+              <div class="stats-col-left">
+                <div class="stats-summary" id="statsSummarySimOther"></div>
+                <div class="stats-histogram" id="statsHistogramSimOther"></div>
+              </div>
+              <div class="stats-col-right">
+                <div class="stats-genres" id="statsGenresSimOther"></div>
+                <div class="stats-genres" id="statsContinentSimOther"></div>
+                <div class="stats-genres" id="statsLanguagesSimOther"></div>
+                <div class="stats-genres" id="statsSpWinsSimOther"></div>
+                <div class="stats-genres" id="statsSpNomsSimOther"></div>
+                <div class="stats-genres" id="statsWinsSimOther"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="tab-section user-ratings-section" id="userRatingsSectionSimOther" hidden style="display:none">
+            <h2 class="movies-heading">Rated Movies <button class="section-toggle" data-target="ratingsContentSimOther">−</button></h2>
+            <div id="ratingsContentSimOther">
+              <table class="ratings-table">
+                <thead><tr><th>Title</th><th>Genres</th><th>Tags</th><th>Rating</th><th>Date</th></tr></thead>
+                <tbody id="ratingsBodySimOther"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="movie-detail" id="movieDetailSimOther" hidden style="display:none">
+            <div class="movie-detail-header">
+              <span class="movies-heading" style="margin:0">Movie Detail</span>
+              <button class="section-toggle" data-target="movieDetailContentSimOther">−</button>
+            </div>
+            <div id="movieDetailContentSimOther" class="movie-detail-content">
+              <div class="detail-sidebar">
+                <img class="detail-poster" id="detailPosterSimOther" src="" alt="" />
+                <div class="detail-ratings" id="detailRatingsSimOther"></div>
+              </div>
+              <div class="detail-body">
+                <h2 class="detail-title" id="detailTitleSimOther"></h2>
+                <div class="detail-meta">
+                  <div class="detail-col">
+                    <div class="meta-item"><span class="meta-label">Year</span><span id="detailYearSimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Released</span><span id="detailReleasedSimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Runtime</span><span id="detailRuntimeSimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Country</span><span id="detailCountrySimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Language</span><span id="detailLanguageSimOther"></span></div>
+                  </div>
+                  <div class="detail-col">
+                    <div class="meta-item"><span class="meta-label">Genre</span><span id="detailGenreSimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Director</span><span id="detailDirectorSimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Writer</span><span id="detailWriterSimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Cast</span><span id="detailCastSimOther"></span></div>
+                    <div class="meta-item"><span class="meta-label">Awards</span><span id="detailAwardsSimOther"></span></div>
+                  </div>
+                </div>
+                <div id="detailPeopleSimOther" class="detail-people"></div>
+                <div id="detailGenresTagsSimOther" class="detail-genres-tags"></div>
+                <div class="detail-plot">
+                  <span class="meta-label">Sinopse</span>
+                  <p id="detailPlotSimOther"></p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+      </div>
     </div>
 
     <!-- Tab 2: New Ratings -->
