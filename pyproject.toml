@@ -10,6 +10,7 @@ dependencies = [
   "pyprojroot>=0.3.0",
   "python-multipart>=0.0.9",
   "snowflake>=1.12.0",
+  "oracledb>=2.0.0",
   "python-dotenv>=1.0.0",
   "joblib>=1.5.3",
   "scikit-learn>=1.8.0",

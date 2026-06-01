@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import oracledb
 import snowflake.connector
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request
@@ -43,16 +44,29 @@ app.mount("/js",  StaticFiles(directory="js"),  name="js")
 COUNTRY_PATH = Path("data/country.tsv")
 
 # ---------------------------------------------------------------------------
-# Snowflake connection
+# Database connection — Snowflake or Oracle (controlled by DB_BACKEND env var)
 # ---------------------------------------------------------------------------
 
-_sf_conn = None
+DB_BACKEND = os.getenv("DB_BACKEND", "snowflake").lower()
+_conn = None
 
 
 def _get_conn():
-    global _sf_conn
-    if _sf_conn is None:
-        _sf_conn = snowflake.connector.connect(
+    global _conn
+    if _conn is not None:
+        return _conn
+
+    if DB_BACKEND == "oracle":
+        _conn = oracledb.connect(
+            user=os.getenv("ORACLE_USER"),
+            password=os.getenv("ORACLE_PASSWORD"),
+            dsn=os.getenv("ORACLE_DSN"),
+            config_dir=os.getenv("ORACLE_WALLET_DIR"),
+            wallet_location=os.getenv("ORACLE_WALLET_DIR"),
+            wallet_password=os.getenv("ORACLE_WALLET_PASSWORD"),
+        )
+    else:
+        _conn = snowflake.connector.connect(
             account=os.getenv("SNOWFLAKE_ACCOUNT"),
             user=os.getenv("SNOWFLAKE_USER"),
             password=os.getenv("SNOWFLAKE_PASSWORD"),
@@ -62,13 +76,31 @@ def _get_conn():
             role=os.getenv("SNOWFLAKE_ROLE"),
             autocommit=True,
         )
-    return _sf_conn
+    return _conn
+
+
+def _adapt_sql(sql: str) -> str:
+    """Convert %s placeholders to :1, :2, ... for Oracle."""
+    if DB_BACKEND != "oracle":
+        return sql
+    counter = 0
+    result = []
+    i = 0
+    while i < len(sql):
+        if sql[i:i+2] == "%s":
+            counter += 1
+            result.append(f":{counter}")
+            i += 2
+        else:
+            result.append(sql[i])
+            i += 1
+    return "".join(result)
 
 
 def _sf_query(sql: str, params=None) -> list[dict]:
     cur = _get_conn().cursor()
     try:
-        cur.execute(sql, params or ())
+        cur.execute(_adapt_sql(sql), params or ())
         cols = [c[0] for c in cur.description] if cur.description else []
         return [dict(zip(cols, row)) for row in cur.fetchall()]
     finally:
@@ -78,7 +110,7 @@ def _sf_query(sql: str, params=None) -> list[dict]:
 def _sf_execute(sql: str, params=None) -> None:
     cur = _get_conn().cursor()
     try:
-        cur.execute(sql, params or ())
+        cur.execute(_adapt_sql(sql), params or ())
     finally:
         cur.close()
 
@@ -86,7 +118,7 @@ def _sf_execute(sql: str, params=None) -> None:
 def _sf_executemany(sql: str, params_list: list) -> None:
     cur = _get_conn().cursor()
     try:
-        cur.executemany(sql, params_list)
+        cur.executemany(_adapt_sql(sql), params_list)
     finally:
         cur.close()
 
@@ -113,7 +145,6 @@ _movie_wris:      dict[str, list]       = {}
 _ml_data:         dict[str, dict]       = {}
 _imdb_genres:     dict[str, list[str]]  = {}
 _ml_genres:       dict[str, list[str]]  = {}
-_movie_tags:      dict[str, list[dict]] = {}
 _imdb_rows:       dict[str, dict]       = {}
 _movie_imdb_awards: dict[str, dict]     = {}
 _movie_languages: dict[str, list[str]]  = {}
@@ -148,12 +179,6 @@ def _load_static_data():
     for _r in _sf_query("SELECT MOVIEID, GENRE FROM MOVIE_ML_GENRE"):
         _ml_genres.setdefault(str(_r["MOVIEID"]), []).append(_r["GENRE"])
 
-    for _r in _sf_query("SELECT MOVIEID, TAG, COUNT FROM MOVIE_TAG"):
-        try:
-            count = int(_r["COUNT"])
-        except (ValueError, KeyError):
-            count = 0
-        _movie_tags.setdefault(str(_r["MOVIEID"]), []).append({"tag": _r["TAG"], "count": count})
 
     for _r in _sf_query("SELECT * FROM MOVIE_IMDB"):
         mid = str(_r.get("MOVIEID") or "").strip()
@@ -214,7 +239,11 @@ def _genres_ml(movieid: str) -> list[str]:
     return _ml_genres.get(movieid, [])
 
 def _tags(movieid: str) -> list[dict]:
-    return sorted(_movie_tags.get(movieid, []), key=lambda x: x["count"], reverse=True)[:20]
+    rows = _sf_query(
+        "SELECT TAG, \"COUNT\" FROM MOVIE_TAG WHERE MOVIEID = %s ORDER BY \"COUNT\" DESC FETCH FIRST 20 ROWS ONLY",
+        (movieid,),
+    )
+    return [{"tag": r["TAG"], "count": int(r["COUNT"] or 0)} for r in rows]
 
 def _clean(val) -> str:
     v = (str(val) if val is not None else "").strip()
@@ -539,9 +568,9 @@ async def user_ratings(userid: str):
 async def lookup(query: str):
     q = query.strip()
     if q.isdigit():
-        rows = _sf_query("SELECT * FROM USER WHERE USERID = %s", (int(q),))
+        rows = _sf_query("SELECT * FROM USER_RS WHERE USERID = %s", (int(q),))
     else:
-        rows = _sf_query("SELECT * FROM USER WHERE EMAIL = %s", (q,))
+        rows = _sf_query("SELECT * FROM USER_RS WHERE EMAIL = %s", (q,))
     if rows:
         user = {k.lower(): v for k, v in rows[0].items()}
         return JSONResponse({"found": True, "user": user})
@@ -558,18 +587,18 @@ async def submit(
     race: str = Form(...),
 ):
     dob_date = date.fromisoformat(dob)
-    existing = _sf_query("SELECT USERID FROM USER WHERE EMAIL = %s", (email,))
+    existing = _sf_query("SELECT USERID FROM USER_RS WHERE EMAIL = %s", (email,))
     if existing:
         _sf_execute(
-            "UPDATE USER SET NAME=%s, DATE_OF_BIRTH=%s, GENDER=%s, COUNTRY=%s, RACE=%s"
+            "UPDATE USER_RS SET NAME=%s, DATE_OF_BIRTH=%s, GENDER=%s, COUNTRY=%s, RACE=%s"
             " WHERE EMAIL=%s",
             (name, dob_date, gender, country, race, email),
         )
     else:
-        max_rows = _sf_query("SELECT COALESCE(MAX(USERID), 0) + 1 AS NEXT_ID FROM USER")
+        max_rows = _sf_query("SELECT COALESCE(MAX(USERID), 0) + 1 AS NEXT_ID FROM USER_RS")
         next_id  = int(max_rows[0]["NEXT_ID"]) if max_rows else 1
         _sf_execute(
-            "INSERT INTO USER (USERID, NAME, EMAIL, DATE_OF_BIRTH, GENDER, COUNTRY, RACE)"
+            "INSERT INTO USER_RS (USERID, NAME, EMAIL, DATE_OF_BIRTH, GENDER, COUNTRY, RACE)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (next_id, name, email, dob_date, gender, country, race),
         )
