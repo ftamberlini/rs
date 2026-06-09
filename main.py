@@ -51,13 +51,9 @@ DB_BACKEND = os.getenv("DB_BACKEND", "snowflake").lower()
 _conn = None
 
 
-def _get_conn():
-    global _conn
-    if _conn is not None:
-        return _conn
-
+def _new_conn():
     if DB_BACKEND == "oracle":
-        _conn = oracledb.connect(
+        return oracledb.connect(
             user=os.getenv("ORACLE_USER"),
             password=os.getenv("ORACLE_PASSWORD"),
             dsn=os.getenv("ORACLE_DSN"),
@@ -65,22 +61,37 @@ def _get_conn():
             wallet_location=os.getenv("ORACLE_WALLET_DIR"),
             wallet_password=os.getenv("ORACLE_WALLET_PASSWORD"),
         )
-    else:
-        _conn = snowflake.connector.connect(
-            account=os.getenv("SNOWFLAKE_ACCOUNT"),
-            user=os.getenv("SNOWFLAKE_USER"),
-            password=os.getenv("SNOWFLAKE_PASSWORD"),
-            warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-            database=os.getenv("SNOWFLAKE_DATABASE"),
-            schema=os.getenv("SNOWFLAKE_SCHEMA"),
-            role=os.getenv("SNOWFLAKE_ROLE"),
-            autocommit=True,
-        )
+    return snowflake.connector.connect(
+        account=os.getenv("SNOWFLAKE_ACCOUNT"),
+        user=os.getenv("SNOWFLAKE_USER"),
+        password=os.getenv("SNOWFLAKE_PASSWORD"),
+        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
+        database=os.getenv("SNOWFLAKE_DATABASE"),
+        schema=os.getenv("SNOWFLAKE_SCHEMA"),
+        role=os.getenv("SNOWFLAKE_ROLE"),
+        autocommit=True,
+    )
+
+
+def _get_conn():
+    global _conn
+    if _conn is None:
+        _conn = _new_conn()
+    return _conn
+
+
+def _reset_conn():
+    global _conn
+    try:
+        if _conn is not None:
+            _conn.close()
+    except Exception:
+        pass
+    _conn = _new_conn()
     return _conn
 
 
 def _adapt_sql(sql: str) -> str:
-    """Convert %s placeholders to :1, :2, ... for Oracle."""
     if DB_BACKEND != "oracle":
         return sql
     counter = 0
@@ -98,33 +109,56 @@ def _adapt_sql(sql: str) -> str:
 
 
 def _sf_query(sql: str, params=None) -> list[dict]:
-    cur = _get_conn().cursor()
-    try:
-        cur.execute(_adapt_sql(sql), params or ())
-        cols = [c[0] for c in cur.description] if cur.description else []
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-    finally:
-        cur.close()
+    for attempt in range(2):
+        try:
+            cur = _get_conn().cursor()
+            try:
+                cur.execute(_adapt_sql(sql), params or ())
+                cols = [c[0] for c in cur.description] if cur.description else []
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+            finally:
+                cur.close()
+        except Exception:
+            if attempt == 0:
+                _reset_conn()
+            else:
+                raise
 
 
 def _sf_execute(sql: str, params=None) -> None:
-    cur = _get_conn().cursor()
-    try:
-        cur.execute(_adapt_sql(sql), params or ())
-    finally:
-        cur.close()
+    for attempt in range(2):
+        try:
+            cur = _get_conn().cursor()
+            try:
+                cur.execute(_adapt_sql(sql), params or ())
+                return
+            finally:
+                cur.close()
+        except Exception:
+            if attempt == 0:
+                _reset_conn()
+            else:
+                raise
 
 
 def _sf_executemany(sql: str, params_list: list) -> None:
-    cur = _get_conn().cursor()
-    try:
-        cur.executemany(_adapt_sql(sql), params_list)
-    finally:
-        cur.close()
+    for attempt in range(2):
+        try:
+            cur = _get_conn().cursor()
+            try:
+                cur.executemany(_adapt_sql(sql), params_list)
+                return
+            finally:
+                cur.close()
+        except Exception:
+            if attempt == 0:
+                _reset_conn()
+            else:
+                raise
 
 
 # ---------------------------------------------------------------------------
-# country.tsv stays as a local file
+# ISO → Continent (loaded once from local TSV — tiny file)
 # ---------------------------------------------------------------------------
 
 def _load_tsv(path: Path) -> list[dict]:
@@ -133,126 +167,63 @@ def _load_tsv(path: Path) -> list[dict]:
     with open(path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f, delimiter="\t"))
 
+_iso_continent: dict[str, str] = {
+    r["ISO"]: r["CONTINENT"] for r in _load_tsv(COUNTRY_PATH) if r.get("ISO")
+}
+
+# Random ordering expression per backend
+_RAND = "DBMS_RANDOM.VALUE" if DB_BACKEND == "oracle" else "RANDOM()"
 
 # ---------------------------------------------------------------------------
-# Static reference data – declared here, populated in the startup event
+# Lazy global stats cache
 # ---------------------------------------------------------------------------
 
-_directors:       dict[str, dict]       = {}
-_writers_dict:    dict[str, dict]       = {}
-_movie_dirs:      dict[str, list]       = {}
-_movie_wris:      dict[str, list]       = {}
-_ml_data:         dict[str, dict]       = {}
-_imdb_genres:     dict[str, list[str]]  = {}
-_ml_genres:       dict[str, list[str]]  = {}
-_imdb_rows:       dict[str, dict]       = {}
-_movie_imdb_awards: dict[str, dict]     = {}
-_movie_languages: dict[str, list[str]]  = {}
-_movie_continents: dict[str, list[str]] = {}
-_iso_continent:   dict[str, str]        = {}
-_user_similarity: dict[str, list[dict]] = {}
+_global_stats_cache: dict | None = None
 
-_global_n_users    = 0
-_global_avg_movies = 0.0
-_global_avg_rating = 0.0
-_global_std        = 0.0
-
-
-@app.on_event("startup")
-def _load_static_data():
-    global _global_n_users, _global_avg_movies, _global_avg_rating, _global_std
-
-    _directors.update({r["DIRECTORID"]: r for r in _sf_query("SELECT * FROM DIRECTOR")})
-    _writers_dict.update({r["WRITERID"]: r for r in _sf_query("SELECT * FROM WRITER")})
-
-    for _r in _sf_query("SELECT MOVIEID, DIRECTORID FROM MOVIE_DIRECTOR"):
-        _movie_dirs.setdefault(str(_r["MOVIEID"]), []).append(_r["DIRECTORID"])
-
-    for _r in _sf_query("SELECT MOVIEID, WRITERID FROM MOVIE_WRITER"):
-        _movie_wris.setdefault(str(_r["MOVIEID"]), []).append(_r["WRITERID"])
-
-    _ml_data.update({str(r["MOVIEID"]): r for r in _sf_query("SELECT * FROM MOVIE_ML")})
-
-    for _r in _sf_query("SELECT MOVIEID, GENRE FROM MOVIE_IMDB_GENRE"):
-        _imdb_genres.setdefault(str(_r["MOVIEID"]), []).append(_r["GENRE"])
-
-    for _r in _sf_query("SELECT MOVIEID, GENRE FROM MOVIE_ML_GENRE"):
-        _ml_genres.setdefault(str(_r["MOVIEID"]), []).append(_r["GENRE"])
-
-
-    for _r in _sf_query("SELECT * FROM MOVIE_IMDB"):
-        mid = str(_r.get("MOVIEID") or "").strip()
-        if mid:
-            _imdb_rows[mid] = _r
-            _movie_imdb_awards[mid] = {
-                "wins": _r.get("AWARD_WINNING"),
-                "noms": _r.get("AWARD_NOMINATION"),
-            }
-
-    for _r in _sf_query("SELECT MOVIEID, LANGUAGE FROM MOVIE_LANGUAGE"):
-        _movie_languages.setdefault(str(_r["MOVIEID"]), []).append(_r["LANGUAGE"])
-
-    _iso_continent.update({
-        r["ISO"]: r["CONTINENT"] for r in _load_tsv(COUNTRY_PATH) if r.get("ISO")
-    })
-
-    for _r in _sf_query("SELECT MOVIEID, ISO FROM MOVIE_COUNTRY"):
-        iso = (_r.get("ISO") or "").strip()
-        continent = _iso_continent.get(iso, "Other")
-        existing = _movie_continents.setdefault(str(_r["MOVIEID"]), [])
-        if continent not in existing:
-            existing.append(continent)
-
-    _global_stats = _sf_query("""
-        SELECT
-            COUNT(DISTINCT USERID)          AS N_USERS,
-            COUNT(*) / COUNT(DISTINCT USERID) AS AVG_MOVIES,
-            AVG(RATING)                     AS AVG_RATING,
-            STDDEV_POP(RATING)              AS STD_RATING
-        FROM USER_MOVIE_RATING
-    """)[0]
-
-    _global_n_users    = int(_global_stats["N_USERS"]    or 0)
-    _global_avg_movies = round(float(_global_stats["AVG_MOVIES"]  or 0), 1)
-    _global_avg_rating = round(float(_global_stats["AVG_RATING"]  or 0), 2)
-    _global_std        = round(float(_global_stats["STD_RATING"]  or 0), 2)
-
-    sim_path = Path("data/user_similarity.csv")
-    if sim_path.exists():
-        with open(sim_path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                uid = str(row["user_id"]).strip()
-                _user_similarity.setdefault(uid, []).append({
-                    "user_id":    str(row["similar_user_id"]).strip(),
-                    "similarity": round(float(row["cosine_similarity"]), 4),
-                })
-
+def _get_global_stats() -> dict:
+    global _global_stats_cache
+    if _global_stats_cache is None:
+        row = _sf_query("""
+            SELECT COUNT(DISTINCT USERID)            AS N_USERS,
+                   COUNT(*) / COUNT(DISTINCT USERID) AS AVG_MOVIES,
+                   AVG(RATING)                       AS AVG_RATING,
+                   STDDEV_POP(RATING)                AS STD_RATING
+            FROM USER_MOVIE_RATING
+        """)[0]
+        _global_stats_cache = {
+            "avg_movies": round(float(row["AVG_MOVIES"] or 0), 1),
+            "avg_rating": round(float(row["AVG_RATING"] or 0), 2),
+            "std":        round(float(row["STD_RATING"] or 0), 2),
+        }
+    return _global_stats_cache
 
 # ---------------------------------------------------------------------------
 # Pure helper functions
 # ---------------------------------------------------------------------------
 
-def _genres_imdb(movieid: str) -> list[str]:
-    return _imdb_genres.get(movieid, [])
-
-def _genres_ml(movieid: str) -> list[str]:
-    return _ml_genres.get(movieid, [])
-
-def _tags(movieid: str) -> list[dict]:
-    rows = _sf_query(
-        "SELECT TAG, \"COUNT\" FROM MOVIE_TAG WHERE MOVIEID = %s ORDER BY \"COUNT\" DESC FETCH FIRST 20 ROWS ONLY",
-        (movieid,),
-    )
-    return [{"tag": r["TAG"], "count": int(r["COUNT"] or 0)} for r in rows]
-
 def _clean(val) -> str:
     v = (str(val) if val is not None else "").strip()
     return "" if v in ("N/A", "") else v
 
-def _ratings(movieid: str, row: dict) -> list[dict]:
-    result: list[dict] = []
-    ml = _ml_data.get(movieid, {})
+def _genres_imdb(movieid: str) -> list[str]:
+    return [r["GENRE"] for r in _sf_query(
+        "SELECT GENRE FROM MOVIE_IMDB_GENRE WHERE MOVIEID = %s", (movieid,)
+    )]
 
+def _genres_ml(movieid: str) -> list[str]:
+    return [r["GENRE"] for r in _sf_query(
+        "SELECT GENRE FROM MOVIE_ML_GENRE WHERE MOVIEID = %s", (movieid,)
+    )]
+
+def _tags(movieid: str) -> list[dict]:
+    rows = _sf_query(
+        'SELECT TAG, "COUNT" FROM MOVIE_TAG WHERE MOVIEID = %s ORDER BY "COUNT" DESC FETCH FIRST 20 ROWS ONLY',
+        (movieid,),
+    )
+    return [{"tag": r["TAG"], "count": int(r["COUNT"] or 0)} for r in rows]
+
+def _ratings(ml: dict, imdb: dict) -> list[dict]:
+    result: list[dict] = []
     ml_score = _clean(ml.get("RATING_ML"))
     if ml_score:
         entry: dict = {"source": "Movie Lens", "score": f"{float(ml_score):.1f}/5"}
@@ -260,32 +231,36 @@ def _ratings(movieid: str, row: dict) -> list[dict]:
         if ml_votes:
             entry["votes"] = ml_votes
         result.append(entry)
-
-    imdb_score = _clean(row.get("IMDBRATING"))
+    imdb_score = _clean(imdb.get("IMDBRATING"))
     if imdb_score:
         entry = {"source": "IMDb", "score": f"{float(imdb_score):.1f}/10"}
-        imdb_votes = _clean(row.get("IMDBVOTES"))
+        imdb_votes = _clean(imdb.get("IMDBVOTES"))
         if imdb_votes:
             entry["votes"] = imdb_votes
         result.append(entry)
-
-    rt = _clean(row.get("RTRATING"))
+    rt = _clean(imdb.get("RTRATING"))
     if rt:
         result.append({"source": "Rotten Tomatoes", "score": f"{float(rt):.0f}/100"})
-
-    mc = _clean(row.get("MCRATING"))
+    mc = _clean(imdb.get("MCRATING"))
     if mc:
         result.append({"source": "Metacritic", "score": f"{float(mc):.0f}/100"})
-
     return result
 
-
-def _people(movieid: str, role_map: dict, person_dict: dict) -> list[dict]:
+def _people(movieid: str, role: str) -> list[dict]:
+    if role == "director":
+        rows = _sf_query("""
+            SELECT D.NAME, D.GENDER, D.RACE, D.NATIONALITY, D.ETHNICITY, D.RELIGION
+            FROM DIRECTOR D JOIN MOVIE_DIRECTOR MD ON D.DIRECTORID = MD.DIRECTORID
+            WHERE MD.MOVIEID = %s
+        """, (movieid,))
+    else:
+        rows = _sf_query("""
+            SELECT W.NAME, W.GENDER, W.RACE, W.NATIONALITY, W.ETHNICITY, W.RELIGION
+            FROM WRITER W JOIN MOVIE_WRITER MW ON W.WRITERID = MW.WRITERID
+            WHERE MW.MOVIEID = %s
+        """, (movieid,))
     result = []
-    for pid in role_map.get(movieid, []):
-        p = person_dict.get(pid)
-        if not p:
-            continue
+    for p in rows:
         entry = {}
         for key, col in [("name", "NAME"), ("gender", "GENDER"), ("race", "RACE"),
                           ("nationality", "NATIONALITY"), ("ethnicity", "ETHNICITY"),
@@ -318,12 +293,15 @@ async def countries():
 
 @app.get("/movie/{movieid}")
 async def movie_detail_by_id(movieid: str):
-    ml     = _ml_data.get(movieid, {})
-    r      = _imdb_rows.get(movieid)
-    if not r:
+    imdb_rows = _sf_query("SELECT * FROM MOVIE_IMDB WHERE MOVIEID = %s", (movieid,))
+    if not imdb_rows:
         return JSONResponse({})
+    r  = imdb_rows[0]
+    ml_rows = _sf_query("SELECT * FROM MOVIE_ML WHERE MOVIEID = %s", (movieid,))
+    ml = ml_rows[0] if ml_rows else {}
     return JSONResponse({
         "id":          movieid,
+        "imdb_id":     _clean(r.get("IMDBID", "")),
         "title":       r.get("TITLE", ""),
         "year":        r.get("YEAR", ""),
         "released":    r.get("RELEASED", ""),
@@ -337,9 +315,9 @@ async def movie_detail_by_id(movieid: str):
         "plot":        r.get("PLOT", ""),
         "poster":      r.get("POSTER", ""),
         "awards":      r.get("AWARDS", ""),
-        "ratings":     _ratings(movieid, r),
-        "directors":   _people(movieid, _movie_dirs, _directors),
-        "writers":     _people(movieid, _movie_wris, _writers_dict),
+        "ratings":     _ratings(ml, r),
+        "directors":   _people(movieid, "director"),
+        "writers":     _people(movieid, "writer"),
         "genres_imdb": _genres_imdb(movieid),
         "genres_ml":   _genres_ml(movieid),
         "tags":        _tags(movieid),
@@ -348,49 +326,36 @@ async def movie_detail_by_id(movieid: str):
 
 @app.get("/movies")
 async def movies(userid: str = ""):
-    rated: set[str] = set()
+    exclude = ""
+    params: tuple = ()
     if userid:
-        for r in _sf_query("""
-            SELECT MOVIEID FROM USER_MOVIE_RATING WHERE USERID = %s
+        exclude = """AND MOVIEID NOT IN (
+            SELECT MOVIEID FROM USER_MOVIE_RATING     WHERE USERID = %s
             UNION
             SELECT MOVIEID FROM NEW_USER_MOVIE_RATING WHERE USERID = %s
-        """, (userid, userid)):
-            rated.add(str(r["MOVIEID"]))
-
-    rows = [r for r in _imdb_rows.values()
-            if _clean(r.get("POSTER")) and str(r.get("MOVIEID", "")) not in rated]
-    sample = random.sample(rows, min(10, len(rows)))
+        )"""
+        params = (userid, userid)
+    rows = _sf_query(
+        f"SELECT MOVIEID, TITLE, YEAR, POSTER FROM MOVIE_IMDB"
+        f" WHERE POSTER IS NOT NULL AND POSTER != 'N/A' {exclude}"
+        f" ORDER BY {_RAND} FETCH FIRST 10 ROWS ONLY",
+        params or (),
+    )
     return JSONResponse([
         {
-            "movieid":     str(r.get("MOVIEID", "")),
-            "id":          str(r.get("MOVIEID", "")),
-            "title":       r["TITLE"],
-            "year":        r["YEAR"],
-            "released":    r["RELEASED"],
-            "runtime":     r["RUNTIME"],
-            "country":     r["COUNTRY"],
-            "language":    r["LANGUAGE"],
-            "genre":       r["GENRE"],
-            "director":    r["DIRECTOR"],
-            "writer":      r["WRITER"],
-            "cast":        r["ACTORS"],
-            "plot":        r["PLOT"],
-            "poster":      r["POSTER"],
-            "ratings":     _ratings(str(r.get("MOVIEID", "")), r),
-            "awards":      r["AWARDS"],
-            "directors":   _people(str(r.get("MOVIEID", "")), _movie_dirs, _directors),
-            "writers":     _people(str(r.get("MOVIEID", "")), _movie_wris, _writers_dict),
-            "genres_imdb": _genres_imdb(str(r.get("MOVIEID", ""))),
-            "genres_ml":   _genres_ml(str(r.get("MOVIEID", ""))),
-            "tags":        _tags(str(r.get("MOVIEID", ""))),
+            "movieid": str(r.get("MOVIEID", "")),
+            "id":      str(r.get("MOVIEID", "")),
+            "title":   r.get("TITLE", ""),
+            "year":    r.get("YEAR", ""),
+            "poster":  r.get("POSTER", ""),
         }
-        for r in sample
+        for r in rows
     ])
 
 
 @app.get("/user_stats/{userid}")
 async def user_stats(userid: str):
-    ratings = _sf_query("SELECT * FROM USER_MOVIE_RATING WHERE USERID = %s", (userid,))
+    ratings = _sf_query("SELECT MOVIEID, RATING FROM USER_MOVIE_RATING WHERE USERID = %s", (userid,))
     if not ratings:
         return JSONResponse({})
 
@@ -401,81 +366,101 @@ async def user_stats(userid: str):
         if n <= 100:  return "51-100"
         return "+100"
 
-    values = []
-    genre_totals,      genre_counts      = {}, {}
-    continent_totals,  continent_counts  = {}, {}
-    language_totals,   language_counts   = {}, {}
-    wins_totals,       wins_counts       = {}, {}
-    sp_wins_totals,    sp_wins_counts    = {}, {}
-    sp_noms_totals,    sp_noms_counts    = {}, {}
+    def _safe_int(val):
+        try: return int(float(val)) if val else 0
+        except (ValueError, TypeError): return 0
+
+    values  = [float(r["RATING"]) for r in ratings if r.get("RATING") is not None]
+    if not values:
+        return JSONResponse({})
+
+    rating_by_movie = {str(r["MOVIEID"]): float(r["RATING"]) for r in ratings if r.get("RATING") is not None}
     bins = {f"{i / 2:.1f}": 0 for i in range(1, 11)}
-
-    _SPECIAL_AWARDS = [
-        ("Oscar", "OSCAR_WINNING",  "OSCAR_NOMINATION"),
-        ("BAFTA", "BAFTA_WINNING",  "BAFTA_NOMINATION"),
-        ("Emmy",  "EMMY_WINNING",   "EMMY_NOMINATION"),
-    ]
-
-    for r in ratings:
-        try:
-            v = float(r["RATING"])
-        except (ValueError, KeyError):
-            continue
-        values.append(v)
-        mid = str(r["MOVIEID"])
-
+    for v in values:
         bucket = f"{max(0.5, min(5.0, round(v * 2) / 2)):.1f}"
         if bucket in bins:
             bins[bucket] += 1
 
-        for g in _ml_genres.get(mid, []):
-            genre_totals[g] = genre_totals.get(g, 0) + v
-            genre_counts[g] = genre_counts.get(g, 0) + 1
+    def _agg(rows, key_col, val_col="RATING"):
+        totals, counts = {}, {}
+        for r in rows:
+            k = str(r[key_col] or "").strip()
+            if not k:
+                continue
+            v = float(r[val_col])
+            totals[k] = totals.get(k, 0) + v
+            counts[k] = counts.get(k, 0) + 1
+        return totals, counts
 
-        for c in _movie_continents.get(mid, []):
-            continent_totals[c] = continent_totals.get(c, 0) + v
-            continent_counts[c] = continent_counts.get(c, 0) + 1
+    # Genres (JOIN)
+    genre_rows = _sf_query("""
+        SELECT mg.GENRE, r.RATING FROM USER_MOVIE_RATING r
+        JOIN MOVIE_ML_GENRE mg ON mg.MOVIEID = r.MOVIEID
+        WHERE r.USERID = %s
+    """, (userid,))
+    genre_totals, genre_counts = _agg(genre_rows, "GENRE")
 
-        for l in _movie_languages.get(mid, []):
-            language_totals[l] = language_totals.get(l, 0) + v
-            language_counts[l] = language_counts.get(l, 0) + 1
+    # Languages (JOIN)
+    lang_rows = _sf_query("""
+        SELECT ml.LANGUAGE, r.RATING FROM USER_MOVIE_RATING r
+        JOIN MOVIE_LANGUAGE ml ON ml.MOVIEID = r.MOVIEID
+        WHERE r.USERID = %s
+    """, (userid,))
+    language_totals, language_counts = _agg(lang_rows, "LANGUAGE")
 
-        awards = _movie_imdb_awards.get(mid, {})
-        for field, totals, counts in [
-            ("wins", wins_totals, wins_counts),
-        ]:
-            raw = awards.get(field, "")
-            try:
-                n = int(float(raw)) if raw else 0
-            except ValueError:
-                n = 0
-            bkt = _award_bucket(n)
-            totals[bkt] = totals.get(bkt, 0) + v
-            counts[bkt] = counts.get(bkt, 0) + 1
+    # Continents (JOIN via MOVIE_COUNTRY + local ISO map)
+    country_rows = _sf_query("""
+        SELECT mc.ISO, r.RATING FROM USER_MOVIE_RATING r
+        JOIN MOVIE_COUNTRY mc ON mc.MOVIEID = r.MOVIEID
+        WHERE r.USERID = %s
+    """, (userid,))
+    continent_totals: dict = {}
+    continent_counts: dict = {}
+    for row in country_rows:
+        iso = (row.get("ISO") or "").strip()
+        c   = _iso_continent.get(iso, "Other")
+        v   = float(row["RATING"])
+        continent_totals[c] = continent_totals.get(c, 0) + v
+        continent_counts[c] = continent_counts.get(c, 0) + 1
 
-        imdb_row = _imdb_rows.get(mid, {})
-        has_sp_win = has_sp_nom = False
-        for label, col_w, col_n in _SPECIAL_AWARDS:
-            def _int(val):
-                try: return int(float(val)) if val else 0
-                except ValueError: return 0
-            if _int(imdb_row.get(col_w, "")):
-                has_sp_win = True
+    # Awards (JOIN)
+    award_rows = _sf_query("""
+        SELECT mi.AWARD_WINNING, mi.OSCAR_WINNING, mi.OSCAR_NOMINATION,
+               mi.BAFTA_WINNING, mi.BAFTA_NOMINATION, mi.EMMY_WINNING, mi.EMMY_NOMINATION,
+               r.RATING
+        FROM USER_MOVIE_RATING r
+        JOIN MOVIE_IMDB mi ON mi.MOVIEID = r.MOVIEID
+        WHERE r.USERID = %s
+    """, (userid,))
+
+    wins_totals, wins_counts = {}, {}
+    sp_wins_totals, sp_wins_counts = {}, {}
+    sp_noms_totals, sp_noms_counts = {}, {}
+    _SP = [("Oscar","OSCAR_WINNING","OSCAR_NOMINATION"),
+           ("BAFTA","BAFTA_WINNING","BAFTA_NOMINATION"),
+           ("Emmy", "EMMY_WINNING", "EMMY_NOMINATION")]
+
+    for row in award_rows:
+        v   = float(row["RATING"])
+        bkt = _award_bucket(_safe_int(row.get("AWARD_WINNING")))
+        wins_totals[bkt] = wins_totals.get(bkt, 0) + v
+        wins_counts[bkt] = wins_counts.get(bkt, 0) + 1
+        has_win = has_nom = False
+        for label, col_w, col_n in _SP:
+            if _safe_int(row.get(col_w)):
+                has_win = True
                 sp_wins_totals[label] = sp_wins_totals.get(label, 0) + v
                 sp_wins_counts[label] = sp_wins_counts.get(label, 0) + 1
-            if _int(imdb_row.get(col_n, "")):
-                has_sp_nom = True
+            if _safe_int(row.get(col_n)):
+                has_nom = True
                 sp_noms_totals[label] = sp_noms_totals.get(label, 0) + v
                 sp_noms_counts[label] = sp_noms_counts.get(label, 0) + 1
-        if not has_sp_win:
+        if not has_win:
             sp_wins_totals["No Special Awards"] = sp_wins_totals.get("No Special Awards", 0) + v
             sp_wins_counts["No Special Awards"] = sp_wins_counts.get("No Special Awards", 0) + 1
-        if not has_sp_nom:
+        if not has_nom:
             sp_noms_totals["No Special Nominations"] = sp_noms_totals.get("No Special Nominations", 0) + v
             sp_noms_counts["No Special Nominations"] = sp_noms_counts.get("No Special Nominations", 0) + 1
-
-    if not values:
-        return JSONResponse({})
 
     avg = sum(values) / len(values)
     std = math.sqrt(sum((v - avg) ** 2 for v in values) / len(values))
@@ -486,13 +471,6 @@ async def user_stats(userid: str):
             key=lambda x: x["avg"], reverse=True
         )
 
-    def _award_list(totals, counts, key):
-        return sorted(
-            [{key: k, "avg": round(totals[k] / counts[k], 1), "count": counts[k]}
-             for k in totals],
-            key=lambda x: x["avg"], reverse=True
-        )
-
     lang_top5 = sorted(
         [{"language": l, "avg": round(language_totals[l] / language_counts[l], 1), "count": language_counts[l]}
          for l in language_totals],
@@ -500,6 +478,7 @@ async def user_stats(userid: str):
     )[:5]
     lang_top5.sort(key=lambda x: x["avg"], reverse=True)
 
+    g = _get_global_stats()
     return JSONResponse({
         "count":          len(values),
         "avg":            round(avg, 2),
@@ -507,15 +486,11 @@ async def user_stats(userid: str):
         "genre_avg":      _avg_list(genre_totals,     genre_counts,     "genre"),
         "continent_avg":  _avg_list(continent_totals, continent_counts, "continent"),
         "language_avg":   lang_top5,
-        "wins_avg":       _award_list(wins_totals,    wins_counts,      "wins"),
-        "sp_wins_avg":    _avg_list(sp_wins_totals,   sp_wins_counts,   "label"),
-        "sp_noms_avg":    _avg_list(sp_noms_totals,   sp_noms_counts,   "label"),
+        "wins_avg":       _avg_list(wins_totals,       wins_counts,      "wins"),
+        "sp_wins_avg":    _avg_list(sp_wins_totals,    sp_wins_counts,   "label"),
+        "sp_noms_avg":    _avg_list(sp_noms_totals,    sp_noms_counts,   "label"),
         "histogram":      [{"rating": k, "count": v} for k, v in bins.items()],
-        "global": {
-            "avg_movies": _global_avg_movies,
-            "avg_rating": _global_avg_rating,
-            "std":        _global_std,
-        },
+        "global":         g,
     })
 
 
@@ -529,12 +504,17 @@ async def user_ratings(userid: str):
     for t in tags_rows:
         tags_by_movie.setdefault(str(t["MOVIEID"]), []).append(t["TAG"])
 
-    for r in _sf_query("SELECT * FROM USER_MOVIE_RATING WHERE USERID = %s", (userid,)):
+    for r in _sf_query("""
+        SELECT r.MOVIEID, r.RATING, r.TIMESTAMP, ml.TITLE
+        FROM USER_MOVIE_RATING r
+        LEFT JOIN MOVIE_ML ml ON ml.MOVIEID = r.MOVIEID
+        WHERE r.USERID = %s
+    """, (userid,)):
         mid   = str(r["MOVIEID"])
-        ml    = _ml_data.get(mid, {})
-        title = (ml.get("TITLE") or "").strip() or mid
-
-        genres = _ml_genres.get(mid, [])
+        title = (r.get("TITLE") or "").strip() or mid
+        genres = [g["GENRE"] for g in _sf_query(
+            "SELECT GENRE FROM MOVIE_ML_GENRE WHERE MOVIEID = %s", (mid,)
+        )]
         tags   = tags_by_movie.get(mid, [])
 
         ts = r.get("TIMESTAMP", "")
@@ -636,12 +616,23 @@ async def user_recommendations(userid: str):
         (int(userid),),
     )
     result = []
+    def _num(val):
+        try:
+            return float(str(val).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
     for r in rows:
         item_id = str(r["ITEM_ID"])
-        ml      = _ml_data.get(item_id, {})
-        title   = (ml.get("TITLE") or "").strip() or item_id
-        genres  = _ml_genres.get(item_id, [])
-        ts      = r.get("TIMESTAMP")
+        ml_rows  = _sf_query("SELECT TITLE, RATING_ML, VOTES_ML FROM MOVIE_ML WHERE MOVIEID = %s", (item_id,))
+        ml       = ml_rows[0] if ml_rows else {}
+        title    = (ml.get("TITLE") or "").strip() or item_id
+        genres   = [g["GENRE"] for g in _sf_query(
+            "SELECT GENRE FROM MOVIE_ML_GENRE WHERE MOVIEID = %s", (item_id,)
+        )]
+        imdb_rows_q = _sf_query("SELECT IMDBRATING, IMDBVOTES FROM MOVIE_IMDB WHERE MOVIEID = %s", (item_id,))
+        imdb_row    = imdb_rows_q[0] if imdb_rows_q else {}
+        ts       = r.get("TIMESTAMP")
         date_str = ""
         if ts:
             try:
@@ -652,16 +643,8 @@ async def user_recommendations(userid: str):
                     date_str = dt.strftime("%d/%m/%Y %H:%M")
             except (ValueError, OSError):
                 pass
-        score     = r.get("SCORE")
-        rank      = r.get("RANK")
-        imdb_row  = _imdb_rows.get(item_id, {})
-
-        def _num(val):
-            try:
-                return float(str(val).replace(",", "").strip())
-            except (TypeError, ValueError):
-                return None
-
+        score = r.get("SCORE")
+        rank  = r.get("RANK")
         rating_ml   = _num(ml.get("RATING_ML"))
         votes_ml    = _num(ml.get("VOTES_ML"))
         rating_imdb = _num(imdb_row.get("IMDBRATING"))
@@ -684,34 +667,15 @@ async def user_recommendations(userid: str):
     return JSONResponse(result)
 
 
-@app.get("/recommend")
-async def recommend_endpoint(userid: str, model: str = "popular", n: int = 10):
-    from rs_rec import Recommender  # lazy import avoids circular dependency
-
-    n   = max(1, min(10, n))
-    rec = Recommender(users=[userid], model=model, n=n)
-    results = []
-    for _key, items in rec.recs():
-        df = items.to_df() if hasattr(items, "to_df") else items
-        for _, row in df.iterrows():
-            item_id = str(row["item_id"])
-            ml      = _ml_data.get(item_id, {})
-            r       = _imdb_rows.get(item_id, {})
-            score   = row.get("score")
-            results.append({
-                "rank":    int(row.get("rank", 0)),
-                "score":   round(float(score), 4) if score is not None and score == score else None,
-                "movieid": item_id,
-                "title":   r.get("TITLE") or ml.get("TITLE") or item_id,
-                "year":    r.get("YEAR", ""),
-                "genre":   r.get("GENRE", ""),
-                "runtime": r.get("RUNTIME", ""),
-                "poster":  r.get("POSTER", ""),
-                "plot":    r.get("PLOT", ""),
-            })
-    return JSONResponse(results)
-
 
 @app.get("/user_similarity/{userid}")
 async def user_similarity_endpoint(userid: str):
-    return JSONResponse(_user_similarity.get(str(userid), []))
+    rows = _sf_query(
+        "SELECT SIMILAR_USER_ID, PEARSON_SIMILARITY FROM USER_SIMILARITY"
+        " WHERE USER_ID = %s ORDER BY PEARSON_SIMILARITY DESC FETCH FIRST 10 ROWS ONLY",
+        (int(userid),),
+    )
+    return JSONResponse([
+        {"user_id": str(r["SIMILAR_USER_ID"]), "similarity": round(float(r["PEARSON_SIMILARITY"]), 4)}
+        for r in rows
+    ])

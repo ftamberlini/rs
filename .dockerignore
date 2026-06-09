@@ -6,3 +6,5 @@ __pycache__/
 .git/
 .pytest_cache/
 model/
+oracle/
+data/*.csv

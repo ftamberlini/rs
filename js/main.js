@@ -8,6 +8,7 @@ import './recommender.js';
 
 export let _currentUserId = null;
 let _moviesLoaded  = false;
+const _tabsLoaded  = new Set();
 
 export const POSTER_PLACEHOLDER = `data:image/svg+xml,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450">' +
@@ -63,12 +64,24 @@ document.addEventListener('click', e => {
 // ── Tab switching ─────────────────────────────────────────────────────────────
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     const tabId = btn.dataset.tab;
     switchTab(tabId);
-    if (tabId === 'tabNew' && !_moviesLoaded) {
-      _moviesLoaded = true;
-      loadMovies();
+    if (_tabsLoaded.has(tabId)) return;
+    if (tabId !== 'tabNew' && !_currentUserId) return;
+    _tabsLoaded.add(tabId);
+    showLoader();
+    try {
+      if (tabId === 'tabNew') {
+        _moviesLoaded = true;
+        await loadMovies();
+      } else if (tabId === 'tabPrevRec') {
+        await loadPrevRecommendations(_currentUserId);
+      } else if (tabId === 'tabSimilarity') {
+        await loadUserSimilarity(_currentUserId);
+      }
+    } finally {
+      hideLoader();
     }
   });
 });
@@ -127,7 +140,8 @@ function showStep1() {
   const srm = document.getElementById('saveRatingsMsg');
   srm.style.display = 'none'; srm.textContent = '';
   clearUserSimilarity();
-  _moviesLoaded  = false;
+  _moviesLoaded = false;
+  _tabsLoaded.clear();
   _currentUserId = null;
 }
 
@@ -182,6 +196,7 @@ export function showMovieDetail(movie, sfx = '') {
   const g = id => document.getElementById(id + sfx);
   const detailPoster   = g('detailPoster');
   detailPoster.alt     = movie.title;
+  detailPoster.title   = `Movie ID: ${movie.id}${movie.imdb_id ? ' | IMDB: ' + movie.imdb_id : ''}`;
   detailPoster.onerror = () => { detailPoster.onerror = null; detailPoster.src = POSTER_PLACEHOLDER; };
   detailPoster.src     = movie.poster;
   g('detailTitle').textContent    = movie.title;
@@ -197,7 +212,6 @@ export function showMovieDetail(movie, sfx = '') {
   g('detailCast').textContent     = movie.cast;
   g('detailAwards').textContent   = movie.awards !== 'N/A' ? movie.awards : '—';
   g('detailPlot').textContent     = movie.plot;
-  renderPeople(movie.directors, movie.writers, sfx);
   renderGenresTags(movie.genres_imdb, movie.genres_ml, movie.tags, sfx);
 }
 
@@ -343,9 +357,13 @@ btnContinue.addEventListener('click', async () => {
     _currentUserId = user.userid;
     fillFields(user);
     showMovieSections();
+    switchTab('tabPrevious');
+    _tabsLoaded.clear();
+    _tabsLoaded.add('tabPrevious');
+    _moviesLoaded = false;
     showLoader();
     try {
-      await Promise.all([loadUserStats(user.userid), loadUserRatings(user.userid), loadPrevRecommendations(user.userid), loadUserSimilarity(user.userid)]);
+      await Promise.all([loadUserStats(user.userid), loadUserRatings(user.userid)]);
       const _rd = getRatingsData();
       if (_rd.length > 0) await showMovieFromId(_rd[0].movieid);
     } finally {

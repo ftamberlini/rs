@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi[standard]>=0.115",
-  "lenskit>=2025.8.0",
   "pyprojroot>=0.3.0",
   "python-multipart>=0.0.9",
   "snowflake>=1.12.0",
