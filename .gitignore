@@ -13,3 +13,5 @@ user_similarity.csv
 .devcontainer/
 oracle/
 oracle
+redeploy.sh
+deploy.sh

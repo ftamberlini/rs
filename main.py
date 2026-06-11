@@ -8,7 +8,6 @@ from decimal import Decimal
 from pathlib import Path
 
 import oracledb
-import snowflake.connector
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import FileResponse
@@ -44,32 +43,20 @@ app.mount("/js",  StaticFiles(directory="js"),  name="js")
 COUNTRY_PATH = Path("data/country.tsv")
 
 # ---------------------------------------------------------------------------
-# Database connection — Snowflake or Oracle (controlled by DB_BACKEND env var)
+# Database connection — Oracle (Autonomous Database with Wallet)
 # ---------------------------------------------------------------------------
 
-DB_BACKEND = os.getenv("DB_BACKEND", "snowflake").lower()
 _conn = None
 
 
 def _new_conn():
-    if DB_BACKEND == "oracle":
-        return oracledb.connect(
-            user=os.getenv("ORACLE_USER"),
-            password=os.getenv("ORACLE_PASSWORD"),
-            dsn=os.getenv("ORACLE_DSN"),
-            config_dir=os.getenv("ORACLE_WALLET_DIR"),
-            wallet_location=os.getenv("ORACLE_WALLET_DIR"),
-            wallet_password=os.getenv("ORACLE_WALLET_PASSWORD"),
-        )
-    return snowflake.connector.connect(
-        account=os.getenv("SNOWFLAKE_ACCOUNT"),
-        user=os.getenv("SNOWFLAKE_USER"),
-        password=os.getenv("SNOWFLAKE_PASSWORD"),
-        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-        database=os.getenv("SNOWFLAKE_DATABASE"),
-        schema=os.getenv("SNOWFLAKE_SCHEMA"),
-        role=os.getenv("SNOWFLAKE_ROLE"),
-        autocommit=True,
+    return oracledb.connect(
+        user=os.getenv("ORACLE_USER"),
+        password=os.getenv("ORACLE_PASSWORD"),
+        dsn=os.getenv("ORACLE_DSN"),
+        config_dir=os.getenv("ORACLE_WALLET_DIR"),
+        wallet_location=os.getenv("ORACLE_WALLET_DIR"),
+        wallet_password=os.getenv("ORACLE_WALLET_PASSWORD"),
     )
 
 
@@ -92,8 +79,6 @@ def _reset_conn():
 
 
 def _adapt_sql(sql: str) -> str:
-    if DB_BACKEND != "oracle":
-        return sql
     counter = 0
     result = []
     i = 0
@@ -171,8 +156,7 @@ _iso_continent: dict[str, str] = {
     r["ISO"]: r["CONTINENT"] for r in _load_tsv(COUNTRY_PATH) if r.get("ISO")
 }
 
-# Random ordering expression per backend
-_RAND = "DBMS_RANDOM.VALUE" if DB_BACKEND == "oracle" else "RANDOM()"
+_RAND = "DBMS_RANDOM.VALUE"
 
 # ---------------------------------------------------------------------------
 # Lazy global stats cache
