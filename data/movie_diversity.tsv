@@ -1,0 +1,10 @@
+diversity_group	label	n_movies	pct
+fem_nowhite	Fem+NoWhite  (gender=0, race=0)	1990	2.3%
+fem_white	Fem+White    (gender=0, race=1)	3431	3.9%
+fem_mix	Fem+Mix      (gender=0, race=2)	2705	3.1%
+male_nowhite	Male+NoWhite (gender=1, race=0)	17344	19.8%
+male_white	Male+White   (gender=1, race=1)	42754	48.8%
+male_mix	Male+Mix     (gender=1, race=2)	15181	17.3%
+mix_nowhite	Mix+NoWhite  (gender=2, race=0)	1251	1.4%
+mix_white	Mix+White    (gender=2, race=1)	739	0.8%
+mix_unknown	Mix+Unknown  (gender=2, race=2)	2190	2.5%
